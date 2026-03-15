@@ -1,0 +1,189 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rideflow-postgres
+    environment:
+      POSTGRES_USER: rideflow
+      POSTGRES_PASSWORD: rideflow123
+      POSTGRES_DB: rideflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rideflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: rideflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: rideflow-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: rideflow
+      RABBITMQ_DEFAULT_PASS: rideflow123
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: rideflow-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - REDIS_URL=redis://redis:6379
+      - RIDE_SERVICE_URL=http://ride-service:3001
+      - DRIVER_SERVICE_URL=http://driver-service:3002
+      - PAYMENT_SERVICE_URL=http://payment-service:3003
+      - TRACKING_SERVICE_URL=http://tracking-service:3004
+      - JWT_SECRET=supersecretjwt2026
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/api-gateway/src:/app/src
+
+  ride-service:
+    build:
+      context: ./services/ride-service
+      dockerfile: Dockerfile
+    container_name: rideflow-ride
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - DATABASE_URL=postgresql://rideflow:rideflow123@postgres:5432/rideflow
+      - RABBITMQ_URL=amqp://rideflow:rideflow123@rabbitmq:5672
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./services/ride-service/src:/app/src
+
+  driver-service:
+    build:
+      context: ./services/driver-service
+      dockerfile: Dockerfile
+    container_name: rideflow-driver
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=development
+      - PORT=3002
+      - DATABASE_URL=postgresql://rideflow:rideflow123@postgres:5432/rideflow
+      - RABBITMQ_URL=amqp://rideflow:rideflow123@rabbitmq:5672
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./services/driver-service/src:/app/src
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: rideflow-payment
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=development
+      - PORT=3003
+      - DATABASE_URL=postgresql://rideflow:rideflow123@postgres:5432/rideflow
+      - RABBITMQ_URL=amqp://rideflow:rideflow123@rabbitmq:5672
+      - STRIPE_SECRET_KEY=sk_test_simulated
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./services/payment-service/src:/app/src
+
+  matching-service:
+    build:
+      context: ./services/matching-service
+      dockerfile: Dockerfile
+    container_name: rideflow-matching
+    environment:
+      - NODE_ENV=development
+      - RABBITMQ_URL=amqp://rideflow:rideflow123@rabbitmq:5672
+      - REDIS_URL=redis://redis:6379
+      - DRIVER_SERVICE_URL=http://driver-service:3002
+      - MATCHING_TIMEOUT_MS=30000
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./services/matching-service/src:/app/src
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: rideflow-notification
+    environment:
+      - NODE_ENV=development
+      - RABBITMQ_URL=amqp://rideflow:rideflow123@rabbitmq:5672
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./services/notification-service/src:/app/src
+
+  tracking-service:
+    build:
+      context: ./services/tracking-service
+      dockerfile: Dockerfile
+    container_name: rideflow-tracking
+    ports:
+      - "3004:3004"
+    environment:
+      - NODE_ENV=development
+      - PORT=3004
+      - RABBITMQ_URL=amqp://rideflow:rideflow123@rabbitmq:5672
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./services/tracking-service/src:/app/src
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
